@@ -1,68 +1,102 @@
 #include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
 #include <pthread.h>
 #include <semaphore.h>
-#include <unistd.h>
+#include <time.h>
 
-#define BUFFER_SIZE 5 
+#define NUM_READERS 5
+#define NUM_WRITERS 3
 
-int buffer[BUFFER_SIZE];
-int in = 0, out = 0; 
+int data = 0;
+int rc = 0;
 
-sem_t empty; 
-sem_t full; 
-pthread_mutex_t mutex; 
+sem_t w; 
+sem_t mutex; 
+sem_t queue;
 
-void* producer(void* arg) {
-    int item;
-    for (int i = 1; i <= 10; i++) {
-        item = i;
-        sem_wait(&empty);    
-        pthread_mutex_lock(&mutex);   
+void msleep(long ms) {
+    usleep(ms * 1000);
+}
 
-        buffer[in] = item;
-        printf("Producer produced item %d at position %d\n", item, in);
-        in = (in + 1) % BUFFER_SIZE; 
+void *reader(void *arg) {
+    int id = *(int *)arg;
+    free(arg);
 
-        pthread_mutex_unlock(&mutex);   
-        sem_post(&full); 
-        sleep(1);  
+    for (int i = 0; i < 5; ++i) {
+        sem_wait(&queue); 
+        sem_wait(&mutex);
+        rc++;
+        if (rc == 1) sem_wait(&w);
+        sem_post(&mutex);
+        sem_post(&queue);   
+
+        printf("[Reader %d] starts reading. shared_data = %d\n", id, data);
+        msleep(50 + rand() % 150);  
+        printf("[Reader %d] finished reading.\n", id);
+
+        sem_wait(&mutex);
+        rc--;
+        if (rc == 0) sem_post(&w);
+        sem_post(&mutex);
+
+        msleep(100 + rand() % 400);
     }
+
     return NULL;
 }
 
-void* consumer(void* arg) {
-    int item;
-    for (int i = 1; i <= 10; i++) {
-        sem_wait(&full);            
-        pthread_mutex_lock(&mutex);   
+void *writer(void *arg) {
+    int id = *(int *)arg;
+    free(arg);
 
-        item = buffer[out];
-        printf("Consumer consumed item %d from position %d\n", item, out);
-        out = (out + 1) % BUFFER_SIZE;  
+    for (int i = 0; i < 5; ++i) {
+        sem_wait(&queue);
+        sem_wait(&w);   
+        sem_post(&queue);
 
-        pthread_mutex_unlock(&mutex);   
-        sem_post(&empty);
-        sleep(2);    
+        printf("    [Writer %d] starts writing.\n", id);
+        int new_value = data + 1;
+        msleep(100 + rand() % 200); 
+        data = new_value;
+        printf("    [Writer %d] finished writing. shared_data -> %d\n", id, data);
+
+        sem_post(&w);
+
+        msleep(200 + rand() % 500);
     }
+
     return NULL;
 }
 
-int main() {
-    pthread_t prodThread, consThread;
+int main(void) {
+    srand((unsigned)time(NULL));
 
-    sem_init(&empty, 0, BUFFER_SIZE);
-    sem_init(&full, 0, 0);
-    pthread_mutex_init(&mutex, NULL);
+    pthread_t readers[NUM_READERS];
+    pthread_t writers[NUM_WRITERS];
 
-    pthread_create(&prodThread, NULL, producer, NULL);
-    pthread_create(&consThread, NULL, consumer, NULL);
+    sem_init(&w, 0, 1);
+    sem_init(&mutex, 0, 1);
+    sem_init(&queue, 0, 1);
 
-    pthread_join(prodThread, NULL);
-    pthread_join(consThread, NULL);
+    for (int i = 0; i < NUM_READERS; i++) {
+        int *id = malloc(sizeof(int));
+        *id = i + 1;
+        pthread_create(&readers[i], NULL, reader, id);
+    }
+    for (int i = 0; i < NUM_WRITERS; i++) {
+        int *id = malloc(sizeof(int));
+        *id = i + 1;
+        pthread_create(&writers[i], NULL, writer, id);
+    }
 
-    sem_destroy(&empty);
-    sem_destroy(&full);
-    pthread_mutex_destroy(&mutex);
+    for (int i = 0; i < NUM_READERS; ++i) pthread_join(readers[i], NULL);
+    for (int i = 0; i < NUM_WRITERS; ++i) pthread_join(writers[i], NULL);
 
+    sem_destroy(&w);
+    sem_destroy(&mutex);
+    sem_destroy(&queue);
+
+    printf("All threads finished. Final shared_data = %d\n", data);
     return 0;
 }
